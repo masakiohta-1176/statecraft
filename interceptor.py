@@ -14,42 +14,33 @@ class _OnRegistry:
     """補完の為、全部記載"""
 
     def before_execute(self, callback: Callable[..., bool]) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._register(current_method_name, callback)
+        self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
     def execute_start(self, callback: Callable[[str], None]) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._register(current_method_name, callback)
+        self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
     def execute_end(self, callback: Callable[[str], None]) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._register(current_method_name, callback)
+        self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
     def before_blocked(self, callback: Callable[[str], None]) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._register(current_method_name, callback)
+        self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
     #  respond用、Frontエージェント起動時専用
     def respond_start(self, callback: Callable[[str], None]) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._register(current_method_name, callback)
+        self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
     def respond_end(self, callback: Callable[[str], None]) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._register(current_method_name, callback)
+        self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
     # memory関連
     def memory_updated(self, callback: Callable[[str], None]) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._register(current_method_name, callback)
+        self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
     def memory_diff(self, callback: Callable[..., bool]) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._register(current_method_name, callback)
+        self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
     def error(self, callback: Callable[[str], None]) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._register(current_method_name, callback)
+        self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
 
 class _CheckDispatcher:
@@ -59,9 +50,7 @@ class _CheckDispatcher:
         self.interceptor = interceptor
 
     def before_execute(self, *, name: str, kwargs: dict) -> bool:
-        """tool/Agentの実行前判定"""
-        current_method_name = inspect.currentframe().f_code.co_name
-        return self.interceptor._check(current_method_name, name=name, kwargs=kwargs)
+        return self.interceptor._check(inspect.currentframe().f_code.co_name, name=name, kwargs=kwargs)
 
 
 class _NotifyDispatcher:
@@ -71,32 +60,26 @@ class _NotifyDispatcher:
         self.interceptor = interceptor
 
     def execute_start(self, message: str) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._notify(current_method_name, message)
+        self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
 
     def execute_end(self, message: str) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._notify(current_method_name, message)
+        self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
 
     def respond_start(self, message: str) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._notify(current_method_name, message)
+        self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
 
     def respond_end(self, message: str) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._notify(current_method_name, message)
+        self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
 
     def memory_updated(self, message: str) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._notify(current_method_name, message)
+        self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
 
     def memory_diff(self, message: str) -> None:
-        current_method_name = inspect.currentframe().f_code.co_name
-        self.interceptor._notify(current_method_name, message)
+        self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
         
     def error(self, message: str) -> None:
-            current_method_name = inspect.currentframe().f_code.co_name
-            self.interceptor._notify(current_method_name, message)
+
+            self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
 
 
 class Interceptor:
