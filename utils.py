@@ -17,17 +17,26 @@ def format_message(template: str, kwargs: dict) -> str:  # ->は戻り値の型�
     """
     try:
         return template.format_map(_SafeDict(kwargs))
-    except (KeyError, ValueError, AttributeError):  # 発生し得るエラーだけをキャッチ、エラー内容を扱いたいときは Exception as eとかでいいらしい
+    except (
+        KeyError,
+        ValueError,
+        AttributeError,
+    ):  # 発生し得るエラーだけをキャッチ、エラー内容を扱いたいときは Exception as eとかでいいらしい
         return template
+
 
 def with_timing(func):
     """関数の実行時間を計測して戻り値に入れるデコレータ
     戻り値はexecution_timeというプロパティを持つオブジェクトである必要がある。
     """
-    @functools.wraps(func) #  これ付けないと全部の関数が全部wrapperにすり替わっちゃうらしい
-    def wrapper(*args,**kwargs):
+
+    @functools.wraps(
+        func
+    )  #  これ付けないと全部の関数が全部wrapperにすり替わっちゃうらしい
+    def wrapper(*args, **kwargs):
         start = time.perf_counter()
-        result = func(*args,**kwargs)
-        result.execution_time = round(time.perf_counter() - start , 3)
+        result = func(*args, **kwargs)
+        result.execution_time = round(time.perf_counter() - start, 3)
         return result
+
     return wrapper

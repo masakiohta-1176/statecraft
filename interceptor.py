@@ -22,7 +22,7 @@ class _OnRegistry:
     def execute_end(self, callback: Callable[[str], None]) -> None:
         self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
-    def before_blocked(self, callback: Callable[[str], None]) -> None:
+    def execute_blocked(self, callback: Callable[[str], None]) -> None:
         self.interceptor._register(inspect.currentframe().f_code.co_name, callback)
 
     #  respond用、Frontエージェント起動時専用
@@ -50,7 +50,9 @@ class _CheckDispatcher:
         self.interceptor = interceptor
 
     def before_execute(self, *, name: str, kwargs: dict) -> bool:
-        return self.interceptor._check(inspect.currentframe().f_code.co_name, name=name, kwargs=kwargs)
+        return self.interceptor._check(
+            inspect.currentframe().f_code.co_name, name=name, kwargs=kwargs
+        )
 
 
 class _NotifyDispatcher:
@@ -65,6 +67,9 @@ class _NotifyDispatcher:
     def execute_end(self, message: str) -> None:
         self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
 
+    def execute_blocked(self, message: str) -> None:
+        self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
+
     def respond_start(self, message: str) -> None:
         self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
 
@@ -76,10 +81,10 @@ class _NotifyDispatcher:
 
     def memory_diff(self, message: str) -> None:
         self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
-        
+
     def error(self, message: str) -> None:
 
-            self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
+        self.interceptor._notify(inspect.currentframe().f_code.co_name, message)
 
 
 class Interceptor:
