@@ -2,7 +2,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Union, get_args, get_origin
+from typing import Any, ClassVar, Union, get_args, get_origin
 
 from interceptor import Interceptor
 from utils import format_message, with_timing
@@ -60,6 +60,14 @@ class Tool:
     # 指定した場合はexecution_messageより優先される。
 
     describe_execution: Callable[[dict], str] | None = None
+    _TYPE_MAP: ClassVar[dict[type, str]] = {
+        int: "integer",
+        float: "number",
+        bool: "boolean",
+        str: "string",
+        list: "array",
+        dict: "object",
+    }
 
     @property
     def name(self):
@@ -152,15 +160,6 @@ class Tool:
             if param.default is inspect.Parameter.empty:
                 required.append(name)
         return {"type": "object", "properties": properties, "required": required}
-
-    _TYPE_MAP = {
-        int: "integer",
-        float: "number",
-        bool: "boolean",
-        str: "string",
-        list: "array",
-        dict: "object",
-    }
 
     @classmethod
     def _schema_for(cls, annotation) -> dict:
