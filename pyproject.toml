@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "statecraft"
+version = "0.1.0"
+description = "記憶を構造として扱うマルチエージェントフレームワーク"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Masaki Ohta" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+gemini = ["google-genai"]
+openai = ["openai"]
+claude = ["anthropic"]
+all = [
+    "google-genai",
+    "openai",
+    "anthropic",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/statecraft"]

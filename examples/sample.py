@@ -53,9 +53,9 @@ compliance だけは、他のエージェントと配置が非対称になって
 
 実行方法
 --------
-    pip install google-genai
-    python sample.py
-    python sample.py "貸出は何冊まで？"    # 質問を指定する場合
+    pip install -e ".[gemini]"
+    python examples/sample.py
+    python examples/sample.py "貸出は何冊まで？"    # 質問を指定する場合
 
 
 APIキーは起動時に入力欄で聞かれる（伏せ字。どこにも保存されない）。
@@ -69,15 +69,15 @@ APIキーは起動時に入力欄で聞かれる（伏せ字。どこにも保�
 続けて実行すると引き継ぎの効果が見える。
 
 
-    python sample.py "深夜特急を予約したい。会員番号はM-001"
-    python sample.py "さっきの予約の受付番号は？"
+    python examples/sample.py "深夜特急を予約したい。会員番号はM-001"
+    python examples/sample.py "さっきの予約の受付番号は？"
 
 
 毎回まっさらな状態で試したい場合は --fresh を付ける。
 引き継ぎの読み込みも保存も行わない。
 
 
-    python sample.py "貸出は何冊まで？" --fresh
+    python examples/sample.py "貸出は何冊まで？" --fresh
 
 
 引き継ぎを完全に消したい場合は sample_carry_over.json を削除する。
@@ -90,6 +90,10 @@ import os
 import sys
 import time
 
+# パッケージ未インストール環境でもリポジトリ直下から直接実行できるように src を解決
+_src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
 
 from statecraft import (
     Agent,
@@ -1426,7 +1430,7 @@ def dump_memory(net: Network) -> None:
 # ここではファイルへ保存しているが、実運用ではDBやKVSになる。
 # 保存先が何であれ、やることは「取り出して、次で代入する」だけ。
 # ==========================================
-CARRY_OVER_FILE = "sample_carry_over.json"
+CARRY_OVER_FILE = os.path.join(os.path.dirname(__file__), "sample_carry_over.json")
 
 
 # 引き継ぐプロパティ。基準は「今回の質問に依存しないか」。

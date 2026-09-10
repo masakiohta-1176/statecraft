@@ -130,12 +130,12 @@ print(net.total_tokens())  # (入力, 出力)
 `Network` は1リクエストにつき1インスタンス。ここで共有記憶が作られ、全Agentへ注入される。委譲先の名前の解決、循環の検出、配線の検証もここで行われる。
 
 
-自己完結したサンプルは `sample.py`。
+自己完結したサンプルは `examples/sample.py`。
 
 
 ```bash
-python sample.py "貸出は何冊まで？"
-python sample.py "貸出は何冊まで？" --fresh    # 前回の記憶を引き継がない
+python examples/sample.py "貸出は何冊まで？"
+python examples/sample.py "貸出は何冊まで？" --fresh    # 前回の記憶を引き継がない
 ```
 
 
@@ -471,7 +471,7 @@ net.shared_memory.back_grounds = [MemoryEntry(**r) for r in saved["back_grounds"
 | `hypotheses` / `open_questions` | しない | 前のターンの未解決論点を追い続ける |
 
 
-**フレームワークは方針を持たない。** 何をセッションとみなすかはアプリケーションごとに違うため。`sample.py` に実装例がある。
+**フレームワークは方針を持たない。** 何をセッションとみなすかはアプリケーションごとに違うため。`examples/sample.py` に実装例がある。
 
 
 ---
@@ -943,7 +943,7 @@ Orchestrator（統括）    記憶を持ち、知識の取得と全体の判断�
 | | 内容 |
 |---|---|
 | [設計思想.md](docs/設計思想.md) | なぜこの作りなのか。分類の破綻、マルチエージェントの捉え方、知識をエージェントへ閉じ込めない原則 |
-| [sampleの読み方.md](docs/sampleの読み方.md) | `sample.py` の全体像と、試せる質問集 |
+| [sampleの読み方.md](docs/sampleの読み方.md) | `examples/sample.py` の全体像と、試せる質問集 |
 
 
 
