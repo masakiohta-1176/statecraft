@@ -1,43 +1,121 @@
+"""
+Agentが持つ「記憶」の定義と、その更新の仕組み。
+
+
+このフレームワークにおける記憶は、情報を溜める倉庫ではなく
+**判断の履歴**である。ツールの実行結果はそのまま保存されるのではなく、
+LLMが要約して記憶へ書き、元の全文はプロンプトから外れる。
+その要約の過程で「そこから何が言えるか」という判断が挟まる。
+
+
+【2種類の記憶】
+    SharedMemory   セッション内の全Agentが同じ実体を読み書きする。
+                   誰かが誰かへ報告するのではなく、全員が同じ場所を見る。
+    PrivateMemory  各Agentが個別に持つ。自分の作業の進行管理だけを入れる。
+
+
+【更新のされ方】
+LLMは記憶を直接書き換えない。「差分」の配列を返し、それを適用する。
+
+
+    [{"field": "facts", "id": "fact-1", "text": "..."}, ...]
+       ↓ apply_diff()
+    該当するプロパティへ追記、または同じidがあれば差し替え
+
+
+差分のJSONスキーマ（build_diff_schema）は、記憶の定義から自動生成される。
+プロパティを1つ増やせばスキーマも自動で追従するため、
+「フィールドを足したのにスキーマを直し忘れる」ということが起きない。
+
+
+【各プロパティの説明はどこにあるか】
+SHARED_MEMORY_GUIDE / PRIVATE_MEMORY_GUIDE に、プロパティごとの
+「何を入れる場所か（description）」と「どう書くか（how_to）」を持つ。
+これらはそのままLLMへのプロンプトとして提示される。
+"""
+
+
 import dataclasses
 import re
+import threading
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, ClassVar, Optional, get_args, get_origin
+from enum import StrEnum, auto
+from typing import Any, ClassVar, get_args, get_origin
+
+
 
 
 @dataclass
 class MemoryEntry:
-    """全プロパティで共通して使う、id・textの最小単位。"""
-
-    id: str
-    text: str
+    """
+    記憶の1件。ほぼ全てのプロパティがこの形の配列として持たれる。
 
 
-class TaskStatus(Enum):
-    """タスクの状態。文字列の直書きだとタイプミスで静かに壊れるためEnumにする。"""
+    idを持たせているのは、LLMが既存の項目を更新できるようにするため。
+    同じidで書き込めば差し替えになり、新しいidなら追記になる。
+    """
 
-    NEXT = "next"  # 次に実行
-    NEXT_PARALLEL = "next_parallel"  # 次に同時実行
-    CONDITIONAL = "conditional"  # 条件付き
-    DONE = "done"  # 完了
-    UNNECESSARY = "unnecessary"  # 不要
+
+    id: str  # この項目の識別子。LLMが付ける（例: "fact-1"）
+    text: str  # 内容そのもの
+
+
+
+
+class TaskStatus(StrEnum):
+    """
+    タスクの状態。
+
+
+    文字列（"next" など）を直接扱わずEnumにしているのは、
+    タイプミスが静かに通ってしまうのを防ぐため。
+    "nxet" と書かれても文字列比較では単に一致しないだけで、
+    「実行対象が無い」と判断されて処理が進んでしまう。
+
+
+    値はauto()で名前から導出される（NEXT_PARALLEL → "next_parallel"）。
+    この値はLLMへ渡すスキーマのenumとして提示され、LLMが書いた文字列を
+    TaskStatus(...)で復元するのにも使われる。名前と値を両方書くと
+    片方だけ直した時に食い違うため、書くのは名前だけにする。
+    """
+
+
+    NEXT = auto()  # 次に実行する
+    NEXT_PARALLEL = auto()  # 次に、他と同時に実行する（相互依存しない場合）
+    CONDITIONAL = auto()  # 前の結果次第で実行する
+    DONE = auto()  # 完了した
+    UNNECESSARY = auto()  # 前提が崩れた、または他の作業で不要になった
+
+
 
 
 @dataclass
 class TaskEntry:
     """
-    tasks専用のエントリ。MemoryEntryのid/textに加えて、
-    状態（status）と呼び出し対象（target_names）を構造化フィールドとして持つ。
-    「〜を実行するため」という目的だけをtextに書き、「何が起きたか」の詳細は
-    actionsに書く（tasksとactionsで内容を重複させない）。
+    tasks専用のエントリ。他のプロパティと違い、text以外の情報を構造として持つ。
+
+
+    tasksは「次に何を実行するか」をシステムへ指示する場所であり、
+    ただのメモではない。target_namesに書かれた名前が、実際に
+    次のステップで呼び出される対象になる。
+
+
+    自然言語で「規程を確認する」と書いても実行はされない。
+    実在するツール名／エージェント名をtarget_namesへ入れた場合のみ、
+    そのツールが提示される。
     """
 
+
     id: str
+    # 「何を判断できるようにするための実行か」という目的を書く。
+    # 実行して何が起きたかはactionsへ書き、ここには重複させない。
     text: str
     status: TaskStatus
-    target_names: list[str] = field(
-        default_factory=list
-    )  # 呼び出すtool/agent名（同時実行なら複数）
+    # 呼び出すツール名またはエージェント名。同時実行なら複数入る。
+    # ここに書かれた名前だけが次のステップで提示される（LLMに選ばせない）。
+    target_names: list[str] = field(default_factory=list)
+
+
 
 
 # ==========================================
@@ -54,10 +132,14 @@ class Stance:
     write: str
 
 
+
+
 @dataclass
 class StanceRegistry:
     shared: Stance
     private: Stance
+
+
 
 
 STANCE = StanceRegistry(
@@ -116,6 +198,8 @@ ROUTING_GUIDE = """
 - まだ答えが出ていない論点                              → open_questions
 - ここまでを踏まえた、現時点の理解                      → state_briefing
 - これから追加で実行する必要のある作業                  → tasks
+- 作業には必要だが、外に出す必要が全く無い知識          → task_notes
+- 手元のtool/agentを、どう使い、どういう時に呼ばないか  → task_notes
 
 
 特に取り違えやすい境界:
@@ -125,6 +209,8 @@ ROUTING_GUIDE = """
 - actions と tasks      : すでに行ったことか、これから行うことか
 - state_briefing と decisions : 要求に対して何が言えるかの提示か、何を採用したかの決定か
 - open_questions と state_briefing : 自分で調べれば埋まるか、相手に聞かないと埋まらないか
+- vars と task_notes    : 相手にも渡すべき値か、自分が作業で使うだけの値か
+- decisions と task_notes : 依頼をどう解釈したかの判断か、手元のtool/agentをどう使うかの取り決めか
 
 
 要求と情報を突き合わせて初めて出てくるものは、すべてstate_briefingに書く。
@@ -147,6 +233,8 @@ factsは、判断に使いやすいよう対象ごとの断片として持つ。
 factsを増やしたときは、この2つが追いついているかを必ず確認する。
 factsだけが増えていく状態は、読む相手にとって情報が増えたことにならない。
 """
+
+
 
 
 # システムだけが書き込むプロパティには how_to を持たせない。
@@ -268,6 +356,16 @@ SHARED_MEMORY_GUIDE = {
         "規定外を扱う場合は、規定内の単位を複数統合して規定に合わせる。"
         "統合できる単位には下限と上限があり、その範囲外は統合の対象にならない」\n"
         "    → 規定外のどんな値を問われても、統合で吸収できるかを導いて判断できる\n"
+        "\n"
+        "【何を理解する必要があるか、はここに書かない】\n"
+        "「〜についての理解が必要」「〜を確認する必要がある」は、"
+        "これから何を調べるべきかを述べているだけで、対象の説明になっていない。\n"
+        "ここに書くのは、調べた結果として分かった対象の性質そのものである。\n"
+        "  不十分:「予約制度や手続き方法についての理解が必要」\n"
+        "    → 何が必要かを述べているだけで、対象について何も説明していない\n"
+        "  モデル:「予約は貸出中の資料に対してのみ受け付ける。"
+        "在架の資料はその場で借りられるため対象にならない。"
+        "確保後に一定期間受け取られなければ取り消される」\n"
         "\n"
         "制約について書く時、「そういう決まりだから」は理由になっていない。"
         "その制約が何を守るためにあるのかまで書く。\n"
@@ -396,7 +494,19 @@ SHARED_MEMORY_GUIDE = {
         "自分の不足としてではなくtasksとして委譲する。\n"
         "「相手が何をどう扱うか分からない」ことを自分の不足として扱うと、"
         "委譲すれば済むものを自分で調べ始めるか、"
-        "手前で止まって不足として返すことになる。",
+        "手前で止まって不足として返すことになる。\n"
+        "\n"
+        "【解決したら書き換える】\n"
+        "答えが出た論点を、未解決のまま残さない。\n"
+        "解決したら同じidで内容を書き換え、解決したことが分かる形にする。\n"
+        "答えそのものはfactsへ書き、ここには解決した事実だけを残す。\n"
+        "\n"
+        "  例:「（解決済み）在庫状態は貸出中と確認できた。fact-1を参照」\n"
+        "\n"
+        "記憶から項目を消す手段は無いため、書き換えないと残り続ける。\n"
+        "放置すると、次のステップでも未解決の論点として読まれ、"
+        "すでに答えの出ていることを再び調べ始める。\n"
+        "次のセッションへ引き継いだ場合は、そのまま持ち込まれる。",
     },
     "agent_answers": {
         "description": "各エージェントが出した回答。単独のエージェントの出力であり、"
@@ -442,7 +552,22 @@ PRIVATE_MEMORY_GUIDE = {
         "  done            … 完了した\n"
         "  unnecessary     … 前提が崩れた、または他の作業により不要になった\n"
         "\n"
+        "【statusは必ず更新する】\n"
+        "tasksは記録用のメモではなく、次に何を実行するかをシステムへ指示する場所である。\n"
+        "システムが実行するのはnextとnext_parallelだけで、それ以外は実行されない。\n"
+        "\n"
         "実行した後は、同じidでstatusを更新する。完了したものを未完了のまま残さない。\n"
+        "残したままにすると、次のステップで同じ対象がまた選ばれる。\n"
+        "\n"
+        "conditionalにしたタスクは、前提が満たされた時点でnextへ上げる。\n"
+        "これを忘れると、そのタスクは一度も実行されない。\n"
+        "しかも実行対象が無くなった状態として扱われ、そのまま回答へ進む。\n"
+        "「予約する」というタスクをconditionalのまま残したまま、\n"
+        "予約が完了したかのように回答する——という失敗がこれで起きる。\n"
+        "実行されないまま残っているタスクが無いか、毎回必ず確認する。\n"
+        "\n"
+        "前提が満たされないと確定した場合は、conditionalのまま放置せずunnecessaryにする。\n"
+        "放置と、実行しないという判断は別のものである。\n"
         "「確認する」「整理する」だけの曖昧なものや、"
         "後で役に立つかもしれないという理由の先回りは作らない。\n"
         "\n"
@@ -480,11 +605,59 @@ PRIVATE_MEMORY_GUIDE = {
         "逆に最終的な結果にまで現れる。\n"
         "例:「この値は順位の判定にのみ使い、最終的な出力には含めない」",
     },
-    "notes": {
-        "description": "作業を進めるうえで保持しておくべき情報",
-        "how_to": "他エージェントや回答には関係しないが、今後自身のタスクを進めるうえで必要になるナレッジなどはここに記載する"
-    }
+    "task_notes": {
+        "description": "tasksを進めるために自分が持っておくべきことのうち、外へ出す必要が全く無いもの。\n"
+        "作業に必要な技術的な詳細と、手元のtool/agentをどう使うかの取り決めを持つ。\n"
+        "他のエージェントからは見えず、共有もされない。",
+        "how_to": "書くのは、作業には必要だが、"
+        "受け取る相手にとって意味を持たない技術的な詳細である。\n"
+        "例: 参照先のテーブル名やカラム名、内部の識別子、"
+        "処理の途中で必要になる形式の取り決め。\n"
+        "\n"
+        "【tool/agentごとに、使い方を固定する】\n"
+        "自分が持つtool/agentについて、「これはこう使う」「こういう時は呼ばない」を"
+        "1つずつ書いて固定する。\n"
+        "  例:「ツールXは名称から識別子を引くためのもの。"
+        "識別子が既に分かっている場合は呼ばない」\n"
+        "  例:「ツールYが返すのは日次の値のみ。期間の合計を求められた場合は、"
+        "取得した値をこちらで合算せず、範囲を指定して取得し直す」\n"
+        "  例:「エージェントZは成果物の作成専用。"
+        "仕様や前提についての質問には使わない」\n"
+        "  例:「対象が一意に定まっていない状態で、ツールWは呼ばない」\n"
+        "\n"
+        "提示される宣言文は毎ステップ同じだが、"
+        "実際に使って分かった制約はそこに書かれていない。"
+        "選べる対象が多いほど、毎回その場で解釈し直すことになり、"
+        "同じtoolの使い方がステップごとにぶれる。\n"
+        "一度こう使うと決めたら、ここへ書いて読み返す。"
+        "そうしないと、材料が増えた時に別の使い方へ流れる。\n"
+        "\n"
+        "特に「呼ばない条件」を明示する。"
+        "使えるものが目の前にあると、必要でない場面でも呼ぶ理由が立ってしまう。"
+        "求められていないことを足しても失敗としては現れず、"
+        "正確に作られた不要なものは誤りとして検出できないまま外へ出ていく。\n"
+        "\n"
+        "【判断のしかた】\n"
+        "次のどちらかに当てはまるなら、ここへ書く。\n"
+        "  - その内容が最終的な回答に現れて困る\n"
+        "  - 自分の作業のための取り決めであり、他のエージェントには意味を持たない\n"
+        "\n"
+        "逆に、相手が読んで判断に使う情報であれば、"
+        "ここではなくsharedの該当プロパティへ書く。"
+        "ここに書いたものは相手に届かないため、"
+        "伝えるべき内容を書くと、伝わらないまま作業が進む。\n"
+        "\n"
+        "【書き写さない】\n"
+        "ここの内容を、sharedのプロパティへ写さない。"
+        "写した時点で共有され、外に出さないという前提が失われる。\n"
+        "同じ理由で、最終的な回答や、他のエージェントへ返す成果物にも含めない。\n"
+        "\n"
+        "作業に使わないものを念のため残す場所ではない。"
+        "何のために必要なのかを、内容と一緒に書く。",
+    },
 }
+
+
 
 
 # ==========================================
@@ -502,10 +675,12 @@ class BaseMemory:
     # 受け取り側で弾くことで構造的に保証する。
     _system_owned: ClassVar[frozenset] = frozenset()
 
+
     @classmethod
     def is_writable(cls, field_name: str) -> bool:
         """LLMからの更新を受け付けてよいプロパティかどうか。"""
         return field_name not in cls._system_owned
+
 
     @classmethod
     def writable_fields(cls) -> dict:
@@ -532,6 +707,7 @@ class BaseMemory:
             result[f.name] = get_args(f.type)[0]
         return result
 
+
     @classmethod
     def diff_schema(cls) -> dict:
         """
@@ -550,6 +726,7 @@ class BaseMemory:
         """
         return build_diff_schema(cls)
 
+
     @staticmethod
     def _render_entry(e) -> str:
         """1件分のエントリを文字列にする。TaskEntryならstatus/target_namesも表示する。"""
@@ -557,6 +734,7 @@ class BaseMemory:
             targets = ", ".join(e.target_names) if e.target_names else "(対象なし)"
             return f"  - [{e.id}] ({e.status.value}) {e.text} → {targets}"
         return f"  - [{e.id}] {e.text}"
+
 
     def render(self, *, include_how_to: bool = True) -> str:
         """
@@ -575,10 +753,12 @@ class BaseMemory:
             if not value:
                 continue  # 空リスト・Noneはスキップ
 
+
             if isinstance(value, list):
                 body = "\n".join(self._render_entry(e) for e in value)
             else:  # Optional[MemoryEntry] の単一値（requestsなど）
                 body = self._render_entry(value)
+
 
             info = self._guide.get(f.name, {})
             lines.append(f"■ {f.name}")
@@ -589,7 +769,9 @@ class BaseMemory:
             lines.append(body)
             lines.append("")
 
+
         return "\n".join(lines)
+
 
     def intro(self, *, include_how_to: bool = True) -> str:
         """
@@ -601,12 +783,15 @@ class BaseMemory:
         return self._reading_stance
 
 
+
+
 @dataclass
 class SharedMemory(BaseMemory):
     """
     全エージェントで共有される記憶（ホワイトボード方式）。
     誰かに報告して受け渡すのではなく、全員が同じ実体を直接読み書きする。
     """
+
 
     _guide: ClassVar[dict] = SHARED_MEMORY_GUIDE
     _reading_stance: ClassVar[str] = STANCE.shared.read
@@ -624,28 +809,21 @@ class SharedMemory(BaseMemory):
     # agent_answers: 回答確定時にシステムが記録する。
     _system_owned: ClassVar[frozenset] = frozenset({"requests", "agent_answers"})
 
-    state_briefing: list[MemoryEntry] = field(
-        default_factory=list
-    )  # 理解の変遷を時系列で追記
-    requests: Optional[MemoryEntry] = None  # 常に最新の1件のみ（上書き）
+
+    state_briefing: list[MemoryEntry] = field(default_factory=list)  # 理解の変遷を時系列で追記
+    requests: MemoryEntry | None = None  # 常に最新の1件のみ（上書き）
     vars: list[MemoryEntry] = field(default_factory=list)  # 不変値（URL/ID/SQL等）
     facts: list[MemoryEntry] = field(default_factory=list)  # 構造化された事実のメモ
-    back_grounds: list[MemoryEntry] = field(
-        default_factory=list
-    )  # factsを解釈するための背景知識
-    actions: list[MemoryEntry] = field(
-        default_factory=list
-    )  # 実際に行った調査・実行の記録
+    back_grounds: list[MemoryEntry] = field(default_factory=list)  # factsを解釈するための背景知識
+    actions: list[MemoryEntry] = field(default_factory=list)  # 実際に行った調査・実行の記録
     decisions: list[MemoryEntry] = field(default_factory=list)  # 採用した判断方針の記録
-    hypotheses: list[MemoryEntry] = field(
-        default_factory=list
-    )  # 根拠はあるが未確定の推測
-    open_questions: list[MemoryEntry] = field(
-        default_factory=list
-    )  # まだ解決していない論点
+    hypotheses: list[MemoryEntry] = field(default_factory=list)  # 根拠はあるが未確定の推測
+    open_questions: list[MemoryEntry] = field(default_factory=list)  # まだ解決していない論点
     agent_answers: list[MemoryEntry] = field(
         default_factory=list
     )  # 各エージェントの回答（追記専用）
+
+
 
 
 @dataclass
@@ -654,24 +832,45 @@ class PrivateMemory(BaseMemory):
     個々のAgentインスタンスだけが持つ記憶。他のAgentとは共有されない。
 
 
-    持つのは「自分の作業の進行管理」だけで、知識は一切持たない。
-    知識を置ける場所をここに用意すると、そのエージェントの内側にしか無い情報が
-    生まれる。他のエージェントから見えず、突き合わせも検証もできない状態は、
-    知識をエージェントへ閉じ込めないという原則と正面から衝突する。
+    持つのは「自分の作業の進行管理」と、その作業のために必要な知識のうち
+    外へ出す必要が全く無いものだけである。
 
 
+    判断に使う知識は原則SharedMemoryへ書く。ここに置くと他のエージェントから
+    見えず、突き合わせも検証もできない情報が生まれるため、
     「自分だけが知っていればよい知識」という区分は作らない。
-    知識は全てSharedMemoryへ書き、判断の根拠を1箇所に保つ。
+
+
+    task_notesはその唯一の例外で、検証性より開示範囲の制御を優先する。
+    参照先のテーブル名やカラム名のように、作業には必要だが依頼元にとっては
+    意味を持たない技術的な詳細が、成果物や最終回答へ紛れ込むのを防ぐ。
+    ここへ置けば、その情報は他のエージェントへ渡らない。
+
+
+    もう一つの用途が、手元のtool/agentをどう使うかの固定である。
+    選べる対象が多いほど、毎ステップその場で解釈し直すことになり、
+    同じtoolの使い方がぶれる。「これはこう使う」「こういう時は呼ばない」を
+    ここへ書いて読み返すことで、解釈を1回に固定する。
+    どちらの用途も、他のエージェントには意味を持たない
+    （tool/agentの構成はエージェントごとに違う）ため、privateに置く。
+
+
+    ただしこれは、フレームワーク側で用意する最低限の仕切りにすぎない。
+    実際に何を外へ出してよいかは扱う情報ごとに違うため、
+    本当に漏洩を防ぎたい場合は、利用側で回答内容を検査する。
     """
+
 
     _guide: ClassVar[dict] = PRIVATE_MEMORY_GUIDE
     _reading_stance: ClassVar[str] = STANCE.private.read
     _writing_stance: ClassVar[str] = STANCE.private.write
 
-    goals: list[MemoryEntry] = field(
-        default_factory=list
-    )  # このエージェントが達成すべき目標
+
+    goals: list[MemoryEntry] = field(default_factory=list)  # このエージェントが達成すべき目標
     tasks: list[TaskEntry] = field(default_factory=list)  # 実行待ちのタスクキュー
+    # 作業に必要だが外へ出さない知識（テーブル名・カラム名・内部の識別子など）
+    task_notes: list[MemoryEntry] = field(default_factory=list)
+
 
     def actionable_tasks(self) -> list[TaskEntry]:
         """
@@ -679,30 +878,46 @@ class PrivateMemory(BaseMemory):
         DONE/UNNECESSARY/CONDITIONALはここでは無視する
         （state更新時にはrender()で全件を見せるので、そちらで参照される）。
         """
-        return [
-            t
-            for t in self.tasks
-            if t.status in (TaskStatus.NEXT, TaskStatus.NEXT_PARALLEL)
-        ]
+        return [t for t in self.tasks if t.status in (TaskStatus.NEXT, TaskStatus.NEXT_PARALLEL)]
+
+
 
 
 # ==========================================
 # 差分の適用
 #
-# LLMは {プロパティ名: [エントリ, ...]} という形の差分を返す。
-# shared / private のどちらに属するかはプロパティ名から一意に決まるため、
-# LLMにスコープを書かせない（GAS版の "global.facts" のような階層キーは不要）。
+# LLMは記憶を直接書き換えるのではなく、「差分」の配列を返す。
+# 1行が1件の書き込みで、次の形をしている。
+#
+#   {"field": "facts", "id": "fact-1", "text": "..."}
+#
+# fieldに書き込み先のプロパティ名を書かせる。そのプロパティが
+# SharedMemory側なのかPrivateMemory側なのかはプロパティ名から一意に決まるため、
+# LLMに「どちらの記憶か」を書かせる必要はない（"shared.facts" のような
+# 階層表記にすると、LLMが階層を書き間違える余地が増えるだけになる）。
 # ==========================================
 @dataclass
 class DiffError:
-    """差分の適用に失敗した1件。LLMへ差し戻す材料になる。"""
+    """
+    差分の適用に失敗した1件。
 
-    field: str
-    entry: Any
-    message: str
+
+    失敗しても例外を投げず、この形で集めて返す。呼び出し側（Agent）は
+    これをLLMへ差し戻して「この行だけ直して」と再生成させる。
+    1行の失敗で全体を止めないための仕組み。
+    """
+
+
+    field: str  # 書き込み先として指定されていたプロパティ名
+    entry: Any  # 失敗した行そのもの（LLMが何を書いたか分かるように保持する）
+    message: str  # なぜ失敗したか。LLMが直せるように具体的に書く
+
 
     def render(self) -> str:
+        """LLMへ差し戻すための1行。プロンプトへそのまま載る。"""
         return f"  - {self.field}: {self.message}（対象: {self.entry}）"
+
+
 
 
 DIFF_EXAMPLE = """[
@@ -713,13 +928,25 @@ DIFF_EXAMPLE = """[
 ]"""
 
 
-# memoryのプロパティではないが、同じ行の形で受け取る制御指示。
-# tool/agentの無効化をここへ載せる。
+
+
+# 記憶のプロパティではないが、差分と同じ行の形で受け取る「制御指示」。
 #
-# GAS版は差分JSONへ _runtime というトップキーを足していたが、
-# ルートを配列にしてキーを置く場所を無くした設計（キー捏造の防止）と両立しない。
-# fieldのenumへ1つ足すだけなら、スキーマの形も階層も変わらない。
+#   {"field": "disable", "id": "send_email", "text": "今回は使わないため"}
+#
+# LLMに「このツールは今回のセッションでは使わない」と宣言させるために使う。
+# 宣言されたツールは以降のステップで一覧にも候補にも現れなくなる。
+#
+# 制御指示のために別のトップレベルキー（{"memory": [...], "control": [...]}
+# のような形）を作らないのは、差分のルートを配列に保つため。
+# ルートをオブジェクトにすると、LLMが定義していないキーを勝手に追加してくる
+# （"remove" や "delete" のような、実装されていない操作を書いてくる）。
+# 配列ならキーを置く場所自体が無いので、それが構造的に起こらない。
+#
+# fieldが取りうる値のenumへ1つ足すだけで済むため、スキーマの形も深さも変わらない。
 DISABLE_FIELD = "disable"
+
+
 
 
 def build_diff_schema(*memories, allow_disable: bool = False) -> dict:
@@ -740,9 +967,11 @@ def build_diff_schema(*memories, allow_disable: bool = False) -> dict:
         cls = m if isinstance(m, type) else type(m)
         fields.update(cls.writable_fields())
 
+
     names = sorted(fields)
     if allow_disable:
         names.append(DISABLE_FIELD)
+
 
     # 各フィールドの意味はスキーマ自身に持たせる。プロンプト側で
     # 「idは既存のものを指定すると更新になる」と説明しても、
@@ -763,12 +992,18 @@ def build_diff_schema(*memories, allow_disable: bool = False) -> dict:
         "text": {"type": "string", "description": "記録する内容"},
     }
 
+
     # tasksを持つmemoryが含まれる時だけ、タスク用のフィールドを足す。
     if any(t is TaskEntry for t in fields.values()):
         properties["status"] = {
             "type": "string",
             "enum": [s.value for s in TaskStatus],
-            "description": "tasksの場合のみ指定する、そのタスクの現在の状態",
+            # tasksの行では実質的に必須。requiredへは入れられない（フラットな配列で
+            # 全fieldが同じ形を共有するため、facts等でも必須になってしまう）。
+            # 代わりに、指定の無いtasks行はapply_diffが破棄して差し戻す。
+            "description": "tasksの場合は必ず指定する、そのタスクの現在の状態。"
+            "指定しないとその行は破棄される。"
+            "実行し終えたタスクは必ずdoneへ更新する（nextのまま残すと同じ実行が繰り返される）",
         }
         properties["target_names"] = {
             "type": "array",
@@ -776,6 +1011,7 @@ def build_diff_schema(*memories, allow_disable: bool = False) -> dict:
             "description": "tasksの場合のみ指定する、このタスクで呼び出すtool名またはagent名。"
             "提示されている名前だけを指定する。同時実行の場合は複数指定する",
         }
+
 
     # ルートを配列にする。オブジェクトで包むと、そこにキーを置ける余地が生まれ、
     # removeやdeleteのような定義していないキーを捏造してくる。
@@ -792,10 +1028,13 @@ def build_diff_schema(*memories, allow_disable: bool = False) -> dict:
     }
 
 
+
+
 def _build_entry(entry_type, raw: dict):
     """1件分の生データからエントリを作る。不正なら例外を投げる。"""
     if not isinstance(raw, dict) or "id" not in raw or "text" not in raw:
         raise ValueError("id と text を持つオブジェクトである必要があります")
+
 
     # 空のidを許すと、_upsertが同一idとみなして既存項目を上書きしてしまう。
     # 「memoryは破棄されない」という保証が静かに破れるため、ここで弾く。
@@ -803,13 +1042,17 @@ def _build_entry(entry_type, raw: dict):
     if not entry_id:
         raise ValueError("idが空です")
 
+
     if entry_type is TaskEntry:
         raw_status = raw.get("status")
         try:
             status = TaskStatus(raw_status)
-        except ValueError:
+        except ValueError as e:
             valid = " / ".join(s.value for s in TaskStatus)
-            raise ValueError(f"statusが不正です（指定可能: {valid}）")
+            # from e で元の例外を繋げる。この差分がなぜ失敗したのかを
+            # 追う時に、Enumの変換で落ちたことが辿れるようにする。
+            raise ValueError(f"statusが不正です（指定可能: {valid}）") from e
+
 
         # target_namesは配列でなければならない。
         # 文字列をlist()に通すと1文字ずつ分解され（"fetch" → ['f','e','t','c','h']）、
@@ -820,6 +1063,7 @@ def _build_entry(entry_type, raw: dict):
         if isinstance(raw_targets, str) or not isinstance(raw_targets, (list, tuple)):
             raise ValueError("target_namesは文字列の配列で指定してください")
 
+
         return TaskEntry(
             id=entry_id,
             text=str(raw["text"]),
@@ -827,13 +1071,24 @@ def _build_entry(entry_type, raw: dict):
             target_names=[str(t) for t in raw_targets],
         )
 
+
     return MemoryEntry(id=entry_id, text=str(raw["text"]))
+
+
 
 
 def _make_id(bucket: list, prefix: str) -> str:
     """
-    重複しないidを作る。tool由来の書き込みでは、tool自身がidを決められない
-    （既存のmemoryを知らない）ため、システム側で連番を振る。
+    まだ使われていないidを作る（"prefix-1", "prefix-2", ... と探す）。
+
+
+    ツールの戻り値を記憶へ直接書き込む場合（write_to_memory=True）に使う。
+    ツール自身は既存の記憶を知らないため、重複しないidを決められない。
+    そこでシステム側が連番を振る。
+
+
+    prefixにはツール名が入るため、idに使えない文字（記号など）を
+    アンダースコアへ置き換えてから使う。
     """
     safe = re.sub(r"[^\w-]", "_", prefix)
     n = 1
@@ -842,8 +1097,17 @@ def _make_id(bucket: list, prefix: str) -> str:
     return f"{safe}-{n}"
 
 
+
+
 def _upsert(bucket: list, entry) -> None:
-    """同じidがあれば差し替え、無ければ追記する。memoryは破棄されない。"""
+    """
+    同じidの項目があれば差し替え、無ければ末尾へ追記する。
+
+
+    「差し替え」しかしないのが要点で、削除する経路は用意していない。
+    LLMが記憶を消せるようにすると、判断の履歴が失われる。
+    不要になった情報は、消すのではなく新しい内容で上書きさせる。
+    """
     for i, existing in enumerate(bucket):
         if existing.id == entry.id:
             bucket[i] = entry
@@ -851,10 +1115,19 @@ def _upsert(bucket: list, entry) -> None:
     bucket.append(entry)
 
 
+
+
+# apply_diffの直列化用。書き込み先はプロセス内のオブジェクトなので、
+# 1つのロックで足りる（待たされる時間は配列操作の分だけ）。
+_diff_lock = threading.RLock()
+
+
+
+
 def apply_diff(
     rows: list,
     *memories: BaseMemory,
-    id_prefix: Optional[str] = None,
+    id_prefix: str | None = None,
 ) -> list[DiffError]:
     """
     差分を該当するmemoryへ適用し、失敗した行だけを返す。
@@ -876,27 +1149,55 @@ def apply_diff(
       リトライのトークンを消費させない
     - 1行の失敗で全体を止めない。通る分は適用し、失敗分だけを返して
       次の生成で修正させる
+
+
+    並列に走ったエージェントが同じSharedMemoryを書きうるため、適用の全体を
+    ロックで囲んでいる。既存項目の差し替えは「同じidを探して置き換える」
+    操作であり、途中で割り込まれると片方の書き込みが消える。
     """
+    with _diff_lock:
+        return _apply_diff(rows, *memories, id_prefix=id_prefix)
+
+
+
+
+def _apply_diff(
+    rows: list,
+    *memories: BaseMemory,
+    id_prefix: str | None = None,
+) -> list[DiffError]:
     errors = []
 
+
+    # ルートが配列でなければ、1行ずつ処理する前に打ち切る。
+    # LLMがオブジェクトを返した場合などが該当する。
     if not isinstance(rows, list):
         return [DiffError("(全体)", rows, "配列である必要があります")]
 
+
     for row in rows:
+        # --- ① 1行がオブジェクトの形をしているか ---------------------------
         if not isinstance(row, dict):
             errors.append(DiffError("(不明)", row, "オブジェクトである必要があります"))
             continue
 
+
+        # --- ② 書き込み先の名前が文字列か ----------------------------------
         field_name = row.get("field")
-        # 辞書のキーとして使うため、hashできない型（list等）が来ると
-        # `field_name in fields_map` の時点でTypeErrorになり、
-        # 「1行の失敗で全体を止めない」という保証が破れる。
+        # この後で辞書のキーとして使うため、hashできない型（listなど）が来ると
+        # `field_name in fields_map` の時点でTypeErrorになる。
+        # そうなると「1行の失敗で全体を止めない」という約束が破れるので、
+        # ここで文字列かどうかを先に確かめる。
         if not isinstance(field_name, str):
-            errors.append(
-                DiffError(str(field_name), row, "fieldは文字列で指定してください")
-            )
+            errors.append(DiffError(str(field_name), row, "fieldは文字列で指定してください"))
             continue
 
+
+        # --- ③ その名前を持つ記憶を探す ------------------------------------
+        # 渡された記憶（shared / private）を順に見て、書き込み可能な
+        # プロパティとして持っているものを探す。
+        # 同時に、そのプロパティが期待するエントリの型（MemoryEntry /
+        # TaskEntry）も受け取る。
         owner = None
         entry_type = None
         for m in memories:
@@ -905,26 +1206,46 @@ def apply_diff(
                 owner, entry_type = m, fields_map[field_name]
                 break
 
-        # 制御指示はmemoryへの書き込みではないため、ここでは扱わない。
-        # 呼び出し側が事前に取り出す前提だが、取り残された場合に
-        # 「存在しないプロパティ」と誤って差し戻さないよう明示的に無視する。
+
+        # --- ④ 制御指示（disable）はここでは扱わない ------------------------
+        # ツールの無効化は記憶への書き込みではないため、呼び出し側が
+        # 事前に取り出して処理する。取り残されてここへ来た場合に
+        # 「存在しないプロパティ」と誤って差し戻さないよう、明示的に無視する。
         if field_name == DISABLE_FIELD:
             continue
 
+
+        # --- ⑤ 見つからなかった場合の扱いを分ける --------------------------
         if owner is None:
-            # システム所有なら黙って破棄、本当に存在しない名前ならエラーとして返す。
+            # システムだけが書き込むプロパティ（requests / agent_answers）なら、
+            # エラーにせず黙って捨てる。LLMへ差し戻しても直せない
+            # （そもそも書かせる気がない）ので、リトライのトークンを使わせない。
             if any(not type(m).is_writable(field_name) for m in memories):
                 continue
+            # 本当に存在しない名前なら、直せる誤りなので差し戻す。
             errors.append(DiffError(str(field_name), row, "存在しないプロパティです"))
             continue
 
+
+        # --- ⑥ 書き込む ----------------------------------------------------
         bucket = getattr(owner, field_name)
+        # ツール由来の書き込みでidが無い場合は、ここで採番する。
+        # （ツールは既存の記憶を知らないので、重複しないidを決められない）
         if id_prefix and not row.get("id"):
             row = {**row, "id": _make_id(bucket, f"{id_prefix}-{field_name}")}
+
 
         try:
             _upsert(bucket, _build_entry(entry_type, row))
         except ValueError as e:
+            # 行の中身が不正だった場合（idが空、statusが不正など）。
+            # 例外は外へ出さず、この行だけを失敗として集める。
             errors.append(DiffError(field_name, row, str(e)))
 
+
     return errors
+
+
+
+
+
