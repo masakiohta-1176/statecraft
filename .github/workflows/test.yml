@@ -1,0 +1,48 @@
+name: test
+
+# push と PR のたびに回す。テストはLLMのAPIを呼ばないので、
+# APIキーもシークレットも要らない（課金も発生しない）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # 1つのバージョンが落ちても、他が通るかを見たいので止めない。
+      fail-fast: false
+      matrix:
+        # pyproject の requires-python / classifiers と揃える。
+        # ここを増減したら、あちらも直すこと。
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # SDKは入れない。テストはFakeLLMで完結し、プロバイダのSDKを使わない。
+      - name: install
+        run: pip install -e ".[dev]"
+
+      - name: pytest
+        run: pytest
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install ruff
+        run: pip install ruff
+
+      - name: ruff check
+        run: ruff check .

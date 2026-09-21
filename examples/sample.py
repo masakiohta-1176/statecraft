@@ -45,8 +45,8 @@ USD_JPY = 155  # 実運用では為替APIか、固定の社内レートを使う
 
 # USD / 100万トークン。
 PRICING: dict[str, dict[str, float]] = {
-    "gemini-3.1-flash-lite": {"in": 0.5, "out": 1.5},
-    "gemini-3.5-flash": {"in": 1.5, "out": 9.0},
+    "gemini-3.5-flash-lite": {"in": 0.3, "out": 2.5},
+    "gemini-3.7-flash": {"in": 0.75, "out": 3.75},
 }
 
 # キャッシュから読まれた入力トークンの単価比（暗黙キャッシュは通常より安い）。
