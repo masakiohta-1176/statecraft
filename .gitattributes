@@ -1,0 +1,8 @@
+# 改行コードはリポジトリの中では常にLFに揃える。
+# Windowsで作業してもindexへLFで入るので、改行だけが違う無意味な差分が出ない。
+* text=auto eol=lf
+
+# GitHubの言語判定から、サンプルとドキュメントを除く
+# （リポジトリの言語がPythonとして表示されるようにする）。
+examples/** linguist-documentation
+docs/** linguist-documentation

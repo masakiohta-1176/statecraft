@@ -12,17 +12,62 @@ license = { text = "MIT" }
 authors = [
     { name = "Masaki Ohta" }
 ]
+keywords = [
+    "llm",
+    "agent",
+    "multi-agent",
+    "agent-framework",
+    "react",
+    "memory",
+    "gemini",
+    "openai",
+    "claude",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Natural Language :: Japanese",
+    "Typing :: Typed",
+]
 dependencies = []
 
+# 下限は「このフレームワークが実際に呼んでいるAPIが入ったバージョン」。
+#   google-genai 1.51.0 … types.ThinkingConfig(thinking_level=...)
+#   openai       1.58.0 … chat.completions の reasoning_effort
+#   anthropic    0.78.0 … messages の thinking={"type": "adaptive"}
+# これより古いSDKでは、生成時にTypeErrorか不正なリクエストになる。
 [project.optional-dependencies]
-gemini = ["google-genai"]
-openai = ["openai"]
-claude = ["anthropic"]
+gemini = ["google-genai>=1.51.0"]
+openai = ["openai>=1.58.0"]
+claude = ["anthropic>=0.78.0"]
 all = [
-    "google-genai",
-    "openai",
-    "anthropic",
+    "statecraft[gemini,openai,claude]",
 ]
+
+[project.urls]
+Homepage = "https://github.com/masakiohta-1176/statecraft"
+Repository = "https://github.com/masakiohta-1176/statecraft"
+Issues = "https://github.com/masakiohta-1176/statecraft/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/statecraft"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# 規則はRuffの既定のまま。BLE001（except Exception）はフレームワークの境界
+# ——利用者が書いたtool本体・interceptorのコールバック・メッセージテンプレート
+# ——を呼ぶ箇所で意図的に使っているため、規則自体は有効にしたまま、該当行へ
+# 個別にnoqaを置いている（どこで何を握るかが差分に残る）。
+#
+# RUF100は、その置き忘れ・置きっぱなしを検出するために足している。
+extend-select = ["RUF100"]

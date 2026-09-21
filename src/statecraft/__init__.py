@@ -1,29 +1,21 @@
 """
 StateCraft — 記憶を構造として扱うマルチエージェントのフレームワーク。
 
-
-エージェント同士は会話を渡さない。渡すのは構造化された依頼と、
-共有された記憶への追記だけ。
-
-
     from statecraft import Agent, GeminiLLM, Network, SharedMemory, Tool
+    from statecraft.agent import Agent          # 直接指定でも同じ
 
-
-各モジュールを直接指定しても同じものが取れる。
-
-
-    from statecraft.agent import Agent
-
-
-ここに並べているのは、利用側が組み立てに使う名前だけ。
-内部で使う補助（プロンプトの断片、差分の適用など）は各モジュールから
-直接importする。全部をここへ並べると、何が使う側の道具で何が内部の
-部品なのかが区別できなくなる。
+並べているのは利用側が組み立てに使う名前だけ。内部の補助
+（プロンプトの断片、差分の適用など）は各モジュールから直接importする。
 """
+
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
 
 from .agent import (
     Agent,
     AgentResponse,
+    ExecuteEvent,
+    GenerationAborted,
     GenerationConfig,
     GenerationEvent,
     MemoryDiffEvent,
@@ -38,6 +30,12 @@ from .network import Network
 from .prompts import Phase
 from .tools import Tool, ToolResult
 
+try:
+    # 配布物のメタデータを唯一の出典にする（pyprojectとの二重管理を避ける）。
+    __version__ = _version("statecraft")
+except PackageNotFoundError:
+    # インストールせずにsrc/を直接importした場合。動作はするので落とさない。
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "Agent",
@@ -45,7 +43,9 @@ __all__ = [
     "BaseLLM",
     "CheckResult",
     "ClaudeLLM",
+    "ExecuteEvent",
     "GeminiLLM",
+    "GenerationAborted",
     "GenerationConfig",
     "GenerationEvent",
     "Interceptor",
@@ -65,4 +65,7 @@ __all__ = [
     "ThoughtLevel",
     "Tool",
     "ToolResult",
+    "__version__",
 ]
+
+

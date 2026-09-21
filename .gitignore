@@ -24,6 +24,8 @@ build/
 .env
 .env.*
 *.env
+# 雛形だけは追跡する（READMEの手順1がこれをコピーするところから始まる）。
+!.env.example
 
 # Local state & logs
 **/sample_carry_over.json
